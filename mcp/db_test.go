@@ -59,3 +59,39 @@ func TestDBCreationAndSearch(t *testing.T) {
 		t.Fatalf("Expected full text, got: %s", mem.FullText)
 	}
 }
+
+func TestSearchMemoriesMultiQueryFindsTokenizedRewrite(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "memory_test_multi_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	userID := "test_user_multi"
+	id, err := InsertMemory(userID, "User's name is Park Nomin.", "name,이름,박노민,user name", "사용자 이름, user name 은 박노민 입니다.")
+	if err != nil {
+		t.Fatalf("InsertMemory failed: %v", err)
+	}
+
+	results, err := SearchMemoriesMultiQuery(userID, []string{
+		"user nickname name profile user",
+		"이름",
+		"박노민",
+	})
+	if err != nil {
+		t.Fatalf("SearchMemoriesMultiQuery failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("Expected at least 1 result, got 0")
+	}
+	if results[0].ID != id {
+		t.Fatalf("Expected result ID %d, got %d", id, results[0].ID)
+	}
+}
