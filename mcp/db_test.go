@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -151,6 +152,38 @@ func TestInsertMemoryCreatesChunks(t *testing.T) {
 	}
 	if chunkCount < 2 {
 		t.Fatalf("expected multiple chunks, got %d", chunkCount)
+	}
+}
+
+func TestSearchMemoryChunkMatchesFindsRelevantChunk(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "memory_chunk_search_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	userID := "chunk_search_user"
+	longText := strings.Repeat("prefix text that does not matter much. ", 40) + "박노민이라는 이름이 뒤쪽 청크에 들어 있습니다."
+	if _, err := InsertMemory(userID, longText); err != nil {
+		t.Fatalf("InsertMemory failed: %v", err)
+	}
+
+	results, err := SearchMemoryChunkMatchesMultiQuery(userID, []string{"박노민"}, 10)
+	if err != nil {
+		t.Fatalf("SearchMemoryChunkMatchesMultiQuery failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected chunk search results, got 0")
+	}
+	if !strings.Contains(results[0].ChunkText, "박노민") {
+		t.Fatalf("expected matching chunk text to contain query, got %q", results[0].ChunkText)
 	}
 }
 
