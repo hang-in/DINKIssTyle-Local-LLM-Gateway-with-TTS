@@ -187,6 +187,43 @@ func TestSearchMemoryChunkMatchesFindsRelevantChunk(t *testing.T) {
 	}
 }
 
+func TestIncrementMemoryChunkHitCount(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "memory_chunk_hit_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	userID := "chunk_hit_user"
+	if _, err := InsertMemory(userID, strings.Repeat("hit count memory content. ", 40)); err != nil {
+		t.Fatalf("InsertMemory failed: %v", err)
+	}
+
+	var chunkID int64
+	if err := db.QueryRow(`SELECT id FROM memory_chunks LIMIT 1`).Scan(&chunkID); err != nil {
+		t.Fatalf("failed to fetch chunk id: %v", err)
+	}
+
+	if err := IncrementMemoryChunkHitCount(chunkID); err != nil {
+		t.Fatalf("IncrementMemoryChunkHitCount failed: %v", err)
+	}
+
+	var hitCount int
+	if err := db.QueryRow(`SELECT hit_count FROM memory_chunks WHERE id = ?`, chunkID).Scan(&hitCount); err != nil {
+		t.Fatalf("failed to read chunk hit count: %v", err)
+	}
+	if hitCount != 1 {
+		t.Fatalf("expected chunk hit count 1, got %d", hitCount)
+	}
+}
+
 func TestLastSessionUpsertAndFetch(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "last_session_test_*.db")
 	if err != nil {
