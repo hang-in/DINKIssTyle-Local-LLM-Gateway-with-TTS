@@ -343,6 +343,7 @@ func TestChatSessionHelpers(t *testing.T) {
 		RiskScore:        0.42,
 		RiskLevel:        "medium",
 		LastResetReason:  "manual",
+		UIStateJSON:      `{"tool_cards":{"turn-1":{"state":"success","tool_name":"get_current_time","history":[{"tool":"Get Current Time","detail":"checked"}]}}}`,
 	})
 	if err != nil {
 		t.Fatalf("UpsertChatSession failed: %v", err)
@@ -357,6 +358,9 @@ func TestChatSessionHelpers(t *testing.T) {
 	}
 	if current.ModelID != "test-model" || current.Status != "running" {
 		t.Fatalf("unexpected chat session state: %+v", current)
+	}
+	if !strings.Contains(current.UIStateJSON, `"tool_cards"`) {
+		t.Fatalf("expected ui state json to round-trip, got %q", current.UIStateJSON)
 	}
 
 	event1, err := AppendChatEvent("chat_user", current.ID, "user", "message.created", "msg-user-1", "turn-1", `{"content":"hello"}`)
