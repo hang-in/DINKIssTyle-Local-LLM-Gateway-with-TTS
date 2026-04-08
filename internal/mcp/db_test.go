@@ -63,6 +63,57 @@ func TestDBCreationAndSearch(t *testing.T) {
 	}
 }
 
+func TestShouldForgetMemoryRespectsConfiguredRetentionDays(t *testing.T) {
+	original := GetMemoryRetentionConfig()
+	t.Cleanup(func() {
+		SetMemoryRetentionConfig(original)
+	})
+
+	now := time.Now().UTC()
+	oldMemory := MemoryEntry{
+		CreatedAt:       now.AddDate(0, 0, -200),
+		LastAccessedAt:  now.AddDate(0, 0, -200),
+		ImportanceScore: 0.10,
+		HitCount:        0,
+	}
+
+	SetMemoryRetentionConfig(MemoryRetentionConfig{
+		CoreDays:      0,
+		WorkingDays:   0,
+		EphemeralDays: 14,
+	})
+
+	coreMemory := oldMemory
+	coreMemory.MemoryTier = memoryTierCore
+	if shouldForgetMemory(coreMemory, now) {
+		t.Fatalf("expected core memory to be retained when CoreDays is 0")
+	}
+
+	workingMemory := oldMemory
+	workingMemory.MemoryTier = memoryTierWorking
+	if shouldForgetMemory(workingMemory, now) {
+		t.Fatalf("expected working memory to be retained when WorkingDays is 0")
+	}
+
+	ephemeralMemory := oldMemory
+	ephemeralMemory.MemoryTier = memoryTierEphemeral
+	if !shouldForgetMemory(ephemeralMemory, now) {
+		t.Fatalf("expected ephemeral memory to be pruned when EphemeralDays is 14")
+	}
+
+	SetMemoryRetentionConfig(MemoryRetentionConfig{
+		CoreDays:      180,
+		WorkingDays:   45,
+		EphemeralDays: 14,
+	})
+	if !shouldForgetMemory(coreMemory, now) {
+		t.Fatalf("expected core memory to be pruned when CoreDays is configured")
+	}
+	if !shouldForgetMemory(workingMemory, now) {
+		t.Fatalf("expected working memory to be pruned when WorkingDays is configured")
+	}
+}
+
 func TestSearchMemoriesMultiQueryFindsTokenizedRewrite(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "memory_test_multi_*.db")
 	if err != nil {
@@ -127,6 +178,22 @@ func TestMemoryChunkTableExists(t *testing.T) {
 	}
 	if ftsTable != "memory_chunks_fts" {
 		t.Fatalf("expected memory_chunks_fts table, got %q", ftsTable)
+	}
+
+	var savedTurnChunkTable string
+	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'saved_turn_chunks'`).Scan(&savedTurnChunkTable); err != nil {
+		t.Fatalf("failed to find saved_turn_chunks table: %v", err)
+	}
+	if savedTurnChunkTable != "saved_turn_chunks" {
+		t.Fatalf("expected saved_turn_chunks table, got %q", savedTurnChunkTable)
+	}
+
+	var savedTurnFTSTable string
+	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'saved_turn_chunks_fts'`).Scan(&savedTurnFTSTable); err != nil {
+		t.Fatalf("failed to find saved_turn_chunks_fts table: %v", err)
+	}
+	if savedTurnFTSTable != "saved_turn_chunks_fts" {
+		t.Fatalf("expected saved_turn_chunks_fts table, got %q", savedTurnFTSTable)
 	}
 }
 
@@ -265,6 +332,98 @@ func TestIncrementMemoryChunkHitCount(t *testing.T) {
 	}
 }
 
+func TestSaveSavedTurnCreatesChunksAndSearches(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "saved_turn_chunk_search_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	userID := "saved_turn_user"
+	entry, err := SaveSavedTurn(userID,
+		"예비군 교육 및 훈련은 몇 년 동안 진행되나요?",
+		"예비군 훈련은 일반적으로 일정 기간 동안 단계적으로 진행됩니다.",
+	)
+	if err != nil {
+		t.Fatalf("SaveSavedTurn failed: %v", err)
+	}
+
+	var chunkCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM saved_turn_chunks WHERE saved_turn_id = ?`, entry.ID).Scan(&chunkCount); err != nil {
+		t.Fatalf("failed to count saved turn chunks: %v", err)
+	}
+	if chunkCount == 0 {
+		t.Fatalf("expected saved turn chunks to be created")
+	}
+
+	var embeddingCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM saved_turn_chunk_embeddings`).Scan(&embeddingCount); err != nil {
+		t.Fatalf("failed to count saved turn embeddings: %v", err)
+	}
+	if embeddingCount != chunkCount {
+		t.Fatalf("expected embeddings for every saved turn chunk, got embeddings=%d chunks=%d", embeddingCount, chunkCount)
+	}
+
+	results, err := SearchSavedTurnChunkMatches(userID, "예비군 훈련 기간", 10)
+	if err != nil {
+		t.Fatalf("SearchSavedTurnChunkMatches failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected saved turn chunk search results, got 0")
+	}
+	if results[0].ID != entry.ID {
+		t.Fatalf("expected saved turn id %d, got %d", entry.ID, results[0].ID)
+	}
+}
+
+func TestDeleteSavedTurnRemovesChunkArtifacts(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "saved_turn_delete_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	userID := "saved_turn_delete_user"
+	entry, err := SaveSavedTurn(userID, "첫째 아들 이름은?", "첫째 아들의 이름은 테스트입니다.")
+	if err != nil {
+		t.Fatalf("SaveSavedTurn failed: %v", err)
+	}
+
+	if err := DeleteSavedTurn(userID, entry.ID); err != nil {
+		t.Fatalf("DeleteSavedTurn failed: %v", err)
+	}
+
+	var chunks int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM saved_turn_chunks WHERE saved_turn_id = ?`, entry.ID).Scan(&chunks); err != nil {
+		t.Fatalf("failed to count saved turn chunks after delete: %v", err)
+	}
+	if chunks != 0 {
+		t.Fatalf("expected saved turn chunks to be deleted, got %d", chunks)
+	}
+
+	var ftsRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM saved_turn_chunks_fts`).Scan(&ftsRows); err != nil {
+		t.Fatalf("failed to count saved turn fts rows after delete: %v", err)
+	}
+	if ftsRows != 0 {
+		t.Fatalf("expected saved turn fts rows to be deleted, got %d", ftsRows)
+	}
+}
+
 func TestRetentionMaintenancePrunesOldEphemeralMemoryAndLogs(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "memory_retention_*.db")
 	if err != nil {
@@ -279,7 +438,7 @@ func TestRetentionMaintenancePrunesOldEphemeralMemoryAndLogs(t *testing.T) {
 	}
 	defer CloseDB()
 
-	oldTime := time.Now().UTC().AddDate(0, 0, -(retentionEphemeralMemoryDays + 10))
+	oldTime := time.Now().UTC().AddDate(0, 0, -(DefaultMemoryRetentionConfig().EphemeralDays + 10))
 	result, err := db.Exec(`
 		INSERT INTO memories (
 			user_id, full_text, hit_count, created_at, memory_type, last_accessed_at, importance_score, pinned, memory_tier
