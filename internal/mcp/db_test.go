@@ -577,6 +577,61 @@ func TestRetentionMaintenancePrunesOldEphemeralMemoryAndLogs(t *testing.T) {
 	}
 }
 
+func TestRetentionMaintenanceUsesShortTTLForStreamingEvents(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "retention_chat_events_short_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	if _, err := db.Exec(`INSERT INTO chat_sessions (user_id, session_key) VALUES (?, ?)`, "retention_user", "default"); err != nil {
+		t.Fatalf("failed to insert chat session: %v", err)
+	}
+	var sessionID int64
+	if err := db.QueryRow(`SELECT id FROM chat_sessions WHERE user_id = ? AND session_key = ?`, "retention_user", "default").Scan(&sessionID); err != nil {
+		t.Fatalf("failed to read chat session id: %v", err)
+	}
+
+	shortExpired := time.Now().UTC().Add(-(time.Duration(retentionChatEventsShortHours) * time.Hour)).Add(-5 * time.Minute)
+	longFresh := time.Now().UTC().Add(-2 * time.Hour)
+
+	if _, err := db.Exec(`INSERT INTO chat_events (session_id, user_id, event_seq, role, event_type, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, "retention_user", 1, "assistant", "message.delta", shortExpired); err != nil {
+		t.Fatalf("failed to insert expired message.delta: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO chat_events (session_id, user_id, event_seq, role, event_type, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, "retention_user", 2, "assistant", "request.complete", longFresh); err != nil {
+		t.Fatalf("failed to insert fresh request.complete: %v", err)
+	}
+
+	if err := runRetentionMaintenance(time.Now().UTC()); err != nil {
+		t.Fatalf("runRetentionMaintenance failed: %v", err)
+	}
+
+	var deltaCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM chat_events WHERE event_type = 'message.delta'`).Scan(&deltaCount); err != nil {
+		t.Fatalf("failed to count message.delta rows: %v", err)
+	}
+	if deltaCount != 0 {
+		t.Fatalf("expected message.delta to be pruned after short ttl, got %d", deltaCount)
+	}
+
+	var completeCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM chat_events WHERE event_type = 'request.complete'`).Scan(&completeCount); err != nil {
+		t.Fatalf("failed to count request.complete rows: %v", err)
+	}
+	if completeCount != 1 {
+		t.Fatalf("expected request.complete to survive long ttl, got %d", completeCount)
+	}
+}
+
 func TestInitDBMigratesLegacyMemoriesRetentionColumns(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "legacy_memories_*.db")
 	if err != nil {
@@ -674,63 +729,6 @@ func TestInitDBMigratesLegacyMemoriesRetentionColumns(t *testing.T) {
 	}
 	if pinned != 0 && pinned != 1 {
 		t.Fatalf("unexpected pinned value %d", pinned)
-	}
-}
-
-func TestLastSessionUpsertAndFetch(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "last_session_test_*.db")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	dbPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(dbPath)
-
-	if err := InitDB(dbPath); err != nil {
-		t.Fatalf("InitDB failed: %v", err)
-	}
-	defer CloseDB()
-
-	userID := "session_user"
-
-	if err := UpsertLastSession(userID, "hello", "hi there", "stateful", nowForTest()); err != nil {
-		t.Fatalf("UpsertLastSession failed: %v", err)
-	}
-
-	entry, err := GetLastSession(userID)
-	if err != nil {
-		t.Fatalf("GetLastSession failed: %v", err)
-	}
-	if entry.LastUserMessage != "hello" {
-		t.Fatalf("expected last user message to be hello, got %q", entry.LastUserMessage)
-	}
-	if entry.LastAssistantMessage != "hi there" {
-		t.Fatalf("expected last assistant message to be hi there, got %q", entry.LastAssistantMessage)
-	}
-	if entry.Mode != "stateful" {
-		t.Fatalf("expected mode to be stateful, got %q", entry.Mode)
-	}
-
-	if err := UpsertLastSession(userID, "updated user", "updated assistant", "standard", nowForTest()); err != nil {
-		t.Fatalf("UpsertLastSession update failed: %v", err)
-	}
-
-	updated, err := GetLastSession(userID)
-	if err != nil {
-		t.Fatalf("GetLastSession after update failed: %v", err)
-	}
-	if updated.LastUserMessage != "updated user" || updated.LastAssistantMessage != "updated assistant" {
-		t.Fatalf("last session was not updated correctly: %+v", updated)
-	}
-	if updated.Mode != "standard" {
-		t.Fatalf("expected mode to be standard after update, got %q", updated.Mode)
-	}
-
-	if err := DeleteLastSession(userID); err != nil {
-		t.Fatalf("DeleteLastSession failed: %v", err)
-	}
-	if _, err := GetLastSession(userID); err == nil {
-		t.Fatalf("expected GetLastSession to fail after delete")
 	}
 }
 
@@ -838,6 +836,47 @@ func TestChatSessionHelpers(t *testing.T) {
 	}
 	if events[0].EventType != "message.created" || events[1].EventType != "message.delta" {
 		t.Fatalf("unexpected chat events: %+v", events)
+	}
+}
+
+func TestInitDBDropsDeprecatedLastSessionsTable(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "legacy_last_sessions_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	legacyDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open legacy db: %v", err)
+	}
+	if _, err := legacyDB.Exec(`
+		CREATE TABLE last_sessions (
+			user_id TEXT PRIMARY KEY,
+			last_user_message TEXT NOT NULL,
+			last_assistant_message TEXT NOT NULL,
+			mode TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`); err != nil {
+		legacyDB.Close()
+		t.Fatalf("failed to create legacy last_sessions table: %v", err)
+	}
+	legacyDB.Close()
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'last_sessions'`).Scan(&count); err != nil {
+		t.Fatalf("failed to inspect sqlite_master for last_sessions: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected last_sessions table to be dropped, got count=%d", count)
 	}
 }
 
