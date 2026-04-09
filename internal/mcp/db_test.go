@@ -383,6 +383,90 @@ func TestSaveSavedTurnCreatesChunksAndSearches(t *testing.T) {
 	}
 }
 
+func TestSearchMemoryChunkMatchesPreTokenizesKoreanSuffixes(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "memory_chunk_korean_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	userID := "memory_chunk_korean_user"
+	id, err := InsertMemory(userID, "임베딩 모델을 최적화했습니다.")
+	if err != nil {
+		t.Fatalf("InsertMemory failed: %v", err)
+	}
+
+	results, err := SearchMemoryChunkMatches(userID, "모델", 10)
+	if err != nil {
+		t.Fatalf("SearchMemoryChunkMatches failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected korean chunk search results, got 0")
+	}
+	if results[0].ID != id {
+		t.Fatalf("expected result ID %d, got %d", id, results[0].ID)
+	}
+
+	results, err = SearchMemoryChunkMatches(userID, "최적화", 10)
+	if err != nil {
+		t.Fatalf("SearchMemoryChunkMatches failed for 최적화: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected korean stem search results for 최적화, got 0")
+	}
+}
+
+func TestSearchSavedTurnChunkMatchesPreTokenizesKoreanSuffixes(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "saved_turn_korean_*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	dbPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(dbPath)
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer CloseDB()
+
+	userID := "saved_turn_korean_user"
+	entry, err := SaveSavedTurn(
+		userID,
+		"임베딩 파이프라인을 어떻게 다듬었나요?",
+		"임베딩 모델을 최적화했습니다. 검색 정확도도 함께 개선했습니다.",
+	)
+	if err != nil {
+		t.Fatalf("SaveSavedTurn failed: %v", err)
+	}
+
+	results, err := SearchSavedTurnChunkMatches(userID, "모델", 10)
+	if err != nil {
+		t.Fatalf("SearchSavedTurnChunkMatches failed for 모델: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected korean saved turn results for 모델, got 0")
+	}
+	if results[0].ID != entry.ID {
+		t.Fatalf("expected saved turn id %d, got %d", entry.ID, results[0].ID)
+	}
+
+	results, err = SearchSavedTurnChunkMatches(userID, "최적화", 10)
+	if err != nil {
+		t.Fatalf("SearchSavedTurnChunkMatches failed for 최적화: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected korean saved turn results for 최적화, got 0")
+	}
+}
+
 func TestDeleteSavedTurnRemovesChunkArtifacts(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "saved_turn_delete_*.db")
 	if err != nil {
@@ -460,10 +544,6 @@ func TestRetentionMaintenancePrunesOldEphemeralMemoryAndLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get retention test memory id: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO request_executions (user_id, intent_key, raw_query, normalized_query, tool_chain_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		"retention_user", "test", "raw", "raw", "[]", oldTime); err != nil {
-		t.Fatalf("failed to insert old request execution: %v", err)
-	}
 	if _, err := db.Exec(`INSERT INTO chat_sessions (user_id, session_key) VALUES (?, ?)`, "retention_user", "default"); err != nil {
 		t.Fatalf("failed to insert chat session: %v", err)
 	}
@@ -486,14 +566,6 @@ func TestRetentionMaintenancePrunesOldEphemeralMemoryAndLogs(t *testing.T) {
 	}
 	if remainingMemories != 0 {
 		t.Fatalf("expected old ephemeral memory to be pruned")
-	}
-
-	var remainingExecutions int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM request_executions`).Scan(&remainingExecutions); err != nil {
-		t.Fatalf("failed to count request executions: %v", err)
-	}
-	if remainingExecutions != 0 {
-		t.Fatalf("expected old request executions to be pruned")
 	}
 
 	var remainingEvents int

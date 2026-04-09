@@ -109,7 +109,6 @@ func TestBuildRuntimeInstructionsIncludesMemoryAndEnvironment(t *testing.T) {
 		EnvironmentInfo:       "- Operating System: darwin\n- Preferred Shell: /bin/zsh\n",
 		ModelID:               "test-model",
 		UseNativeIntegrations: true,
-		ProceduralHint:        "\n\n### PROCEDURAL HINT ###\nUse search first.",
 		MemorySnapshot:        "likes tea",
 		ActiveContext:         "recently asked about weather",
 	})
@@ -119,9 +118,6 @@ func TestBuildRuntimeInstructionsIncludesMemoryAndEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(got, "### MEMORY CONTEXT ###") {
 		t.Fatalf("expected memory section in runtime instructions")
-	}
-	if !strings.Contains(got, "### PROCEDURAL HINT ###") {
-		t.Fatalf("expected procedural hint in runtime instructions")
 	}
 	if !strings.Contains(got, "ENVIRONMENT INFO:") {
 		t.Fatalf("expected environment info in runtime instructions")
