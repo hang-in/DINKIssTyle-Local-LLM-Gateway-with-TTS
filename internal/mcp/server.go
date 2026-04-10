@@ -33,8 +33,8 @@ type JSONRPCError struct {
 
 // Global state for SSE clients
 var (
-	clients   = make(map[chan string]bool)
-	clientsMu sync.Mutex
+	clients                = make(map[chan string]bool)
+	clientsMu              sync.Mutex
 	requestContextResolver func(*http.Request) ToolContext
 	requestContextMu       sync.RWMutex
 )
