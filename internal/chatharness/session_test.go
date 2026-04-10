@@ -7,7 +7,7 @@ import (
 	"dinkisstyle-chat/internal/mcp"
 )
 
-func TestSessionTrackerSkipsDeltaSnapshotPersistenceUntilCompletion(t *testing.T) {
+func TestSessionTrackerKeepsIntermediateProjectionOutOfDBUntilCompletion(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "session_tracker_*.db")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
@@ -65,18 +65,18 @@ func TestSessionTrackerSkipsDeltaSnapshotPersistenceUntilCompletion(t *testing.T
 	if len(snapshotAfterDelta.Messages) != 1 {
 		t.Fatalf("expected 1 snapshot message after delta, got %d", len(snapshotAfterDelta.Messages))
 	}
-	if snapshotAfterDelta.Messages[0].AssistantContent != "" {
-		t.Fatalf("expected assistant content to stay empty until completion, got %q", snapshotAfterDelta.Messages[0].AssistantContent)
+	if len(snapshotAfterDelta.Turns) != 1 {
+		t.Fatalf("expected 1 turn projection after delta, got %d", len(snapshotAfterDelta.Turns))
 	}
 	eventsAfterDelta, err := mcp.ListChatEvents("chat_user", current.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("ListChatEvents after delta failed: %v", err)
 	}
-	if len(eventsAfterDelta) != 1 {
-		t.Fatalf("expected only user event to persist before completion, got %d", len(eventsAfterDelta))
+	if len(eventsAfterDelta) != 0 {
+		t.Fatalf("expected no persisted chat events before completion, got %d", len(eventsAfterDelta))
 	}
-	if eventsAfterDelta[0].EventType != "message.created" {
-		t.Fatalf("expected only message.created before completion, got %+v", eventsAfterDelta)
+	if snapshotAfterDelta.Messages[0].AssistantContent != "" {
+		t.Fatalf("expected intermediate assistant content to stay out of persisted snapshot, got %q", snapshotAfterDelta.Messages[0].AssistantContent)
 	}
 
 	tracker.AppendEvent(state, "assistant", "request.complete", map[string]interface{}{
@@ -94,14 +94,17 @@ func TestSessionTrackerSkipsDeltaSnapshotPersistenceUntilCompletion(t *testing.T
 	if snapshotAfterComplete.Messages[0].AssistantContent != "final answer" {
 		t.Fatalf("expected final assistant content after completion, got %q", snapshotAfterComplete.Messages[0].AssistantContent)
 	}
+	if len(snapshotAfterComplete.Turns) != 1 || snapshotAfterComplete.Turns[0].Status != "completed" {
+		t.Fatalf("expected completed turn projection after completion, got %+v", snapshotAfterComplete.Turns)
+	}
 	eventsAfterComplete, err := mcp.ListChatEvents("chat_user", current.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("ListChatEvents after completion failed: %v", err)
 	}
-	if len(eventsAfterComplete) != 2 {
-		t.Fatalf("expected user and completion events after completion, got %d", len(eventsAfterComplete))
+	if len(eventsAfterComplete) != 1 {
+		t.Fatalf("expected only completion event after completion, got %d", len(eventsAfterComplete))
 	}
-	if eventsAfterComplete[1].EventType != "request.complete" {
+	if eventsAfterComplete[0].EventType != "request.complete" {
 		t.Fatalf("expected request.complete as final persisted event, got %+v", eventsAfterComplete)
 	}
 }
