@@ -88,10 +88,8 @@ func buildResponse(req *JSONRPCRequest, userID string, enableMemory bool, disabl
 		}
 
 	case "tools/list":
-		// TODO: Filter tools list based on disabledTools?
-		// For now, list all, but fail on call.
 		res.Result = map[string]interface{}{
-			"tools": GetToolList(),
+			"tools": GetToolListForContext(enableMemory, disabledTools),
 		}
 
 	case "tools/call":

@@ -383,6 +383,39 @@ func GetToolList() []Tool {
 	return filtered
 }
 
+func toolRequiresMemory(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "search_memory", "read_memory", "read_memory_context", "delete_memory", "save_user_fact", "delete_user_fact":
+		return true
+	default:
+		return false
+	}
+}
+
+func GetToolListForContext(enableMemory bool, disabledTools []string) []Tool {
+	blocked := make(map[string]bool, len(disabledTools))
+	for _, name := range disabledTools {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		blocked[name] = true
+	}
+
+	tools := GetToolList()
+	filtered := make([]Tool, 0, len(tools))
+	for _, tool := range tools {
+		if blocked[tool.Name] {
+			continue
+		}
+		if !enableMemory && toolRequiresMemory(tool.Name) {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
 func compactMemoryText(input string, limit int) string {
 	input = strings.TrimSpace(input)
 	if limit <= 0 || len([]rune(input)) <= limit {
